@@ -58,6 +58,10 @@ export interface TornadoChartSeries {
     name: string;
     selectionId: ISelectionId;
     categoryAxisEnd: number;
+    leftAxisMin: number | null;
+    leftAxisMax: number | null;
+    rightAxisMin: number | null;
+    rightAxisMax: number | null;
 }
 
 export interface TornadoChartLabelFormatter {
@@ -96,6 +100,8 @@ export interface TornadoChartPoint {
     highlightedValue: number;
     minValue: number;
     maxValue: number;
+    seriesMin: number;
+    seriesMax: number;
     formatString: string;
     selected: boolean;
     identity: ISelectionId;
@@ -131,6 +137,7 @@ export interface TornadoBehaviorOptions {
     tooltipArgs: TooltipArgsWrapper;
     gradients: Selection<TornadoChartPoint>;
     isFormatMode: boolean;
+    negativeBarsTransparency: number;
 }
 
 export interface TooltipCategoryDataItem {

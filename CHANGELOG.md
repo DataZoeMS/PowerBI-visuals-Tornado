@@ -1,3 +1,28 @@
+## 3.2.0.0
+
+### New Features
+* Added theme color support for bar fill colors (uses Power BI theme palette)
+* Added bar formatting options: border, corner radius, and inner padding
+* Added center line customization (visibility, color, width, style)
+* Added plot area background fill with transparency control
+* Added negative bar color customization (independent from positive bars)
+* Added axis normalization option to scale both sides to 100%
+* Added auto-range toggles for left/right axis scales (allows independent min/max per side)
+* Added data label display format options: Value, Percentage, or Value (%)
+* Added new modern icon with gradient bars
+* Legend now shows for both dynamic series (Legend field) and static measures (multiple Values)
+
+### Improvements
+* Improved axis min/max controls with "Auto" placeholder for automatic values
+* Added validation to prevent min value exceeding max value
+* Enhanced high contrast mode support for bars (proper background fill and foreground stroke)
+* Fixed legend positioning when set to bottom (now properly anchored to bottom of visual)
+* Updated legend defaults: Segoe UI font, size 12, color #616161
+
+### Localization
+* Added localization strings for all new formatting options (43 languages)
+* Fixed missing localization keys for legend formatting pane (Options, Text, Font, etc.)
+
 ## 3.1.1.0
 * Fixed issue where increasing Data Label text size reduced label clickability.
 * Fixed issue where Data Colors were reset after modifying X-Axis values.

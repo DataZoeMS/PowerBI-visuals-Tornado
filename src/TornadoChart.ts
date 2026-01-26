@@ -52,6 +52,7 @@ import PrimitiveValue = powerbiVisualsApi.PrimitiveValue;
 import VisualUpdateType = powerbiVisualsApi.VisualUpdateType;
 
 import IColorPalette = powerbiVisualsApi.extensibility.IColorPalette;
+import ISandboxExtendedColorPalette = powerbiVisualsApi.extensibility.ISandboxExtendedColorPalette;
 import ILocalizationManager = powerbiVisualsApi.extensibility.ILocalizationManager;
 import IVisualEventService = powerbi.extensibility.IVisualEventService;
 
@@ -186,6 +187,18 @@ export class TornadoChart implements IVisual {
         const categories: DataViewCategoryColumn[] = categorical.categories || [];
         const values: DataViewValueColumns = categorical.values;
         const category: DataViewCategoryColumn = categories[0];
+        
+        // Calculate per-series min/max for normalization
+        const seriesMinMax: { min: number; max: number }[] = [];
+        for (let s = 0; s < Math.min(values.length, TornadoChart.MaxSeries); s++) {
+            const seriesValues = <number[]>values[s].values;
+            seriesMinMax.push({
+                min: Math.min(min(seriesValues), 0),
+                max: max(seriesValues)
+            });
+        }
+        
+        // Global min/max (for non-normalized view)
         let maxValue: number = max(<number[]>values[0].values);
         let minValue: number = Math.min(min(<number[]>values[0].values), 0);
         if (values.length >= TornadoChart.MaxSeries) {
@@ -230,16 +243,53 @@ export class TornadoChart implements IVisual {
                         seriesIndex,
                         highlightedValue || null);
 
-                // Limit maximum value with what the user choose
-                const currentMaxValue = parsedSeries.categoryAxisEnd ? parsedSeries.categoryAxisEnd : maxValue;
+                // Determine axis settings based on series index (0 = left, 1 = right)
+                const isLeftSeries = seriesIndex === 0;
+                const isNormalized = formattingSettings?.axis?.normalize?.value ?? false;
+                
+                // Check auto range toggles
+                const useAutoRange = isLeftSeries
+                    ? (formattingSettings?.axis?.leftAutoRange?.value ?? true)
+                    : (formattingSettings?.axis?.rightAutoRange?.value ?? true);
+                
+                const axisMin = isLeftSeries 
+                    ? formattingSettings?.axis?.leftMin?.value 
+                    : formattingSettings?.axis?.rightMin?.value;
+                const axisMax = isLeftSeries 
+                    ? formattingSettings?.axis?.leftMax?.value 
+                    : formattingSettings?.axis?.rightMax?.value;
+
+                // Helper to check if a value is set (not null/undefined/NaN)
+                const isValueSet = (val: number | null | undefined): val is number =>
+                    val !== null && val !== undefined && !isNaN(val);
+
+                // Use user-specified values if auto range is OFF and value is set, otherwise use data-driven values
+                // This allows setting just min OR just max independently
+                const currentMinValue = !useAutoRange && isValueSet(axisMin) ? axisMin : minValue;
+                const currentMaxValue = !useAutoRange && isValueSet(axisMax) ? axisMax : maxValue;
+                
+                // Per-series min/max for normalization
+                const seriesMin = seriesMinMax[seriesIndex]?.min ?? 0;
+                const seriesMax = seriesMinMax[seriesIndex]?.max ?? currentMaxValue;
+                
                 const formatString: string = dataView.categorical.values[seriesIndex].source.format;
+                
+                // Use the series color (from parseSeries which reads from theme/settings)
+                // Override with negative bar color if value is negative and negative fill is defined
+                let dataPointColor = parsedSeries.fill;
+                if (value < 0 && formattingSettings?.negativeBars?.color?.fill?.value?.value) {
+                    dataPointColor = formattingSettings.negativeBars.color.fill.value.value;
+                }
+
                 const dataPointCommon = {
                     uniqId: uniqId,
                     value,
-                    minValue,
+                    minValue: currentMinValue,
                     maxValue: currentMaxValue,
+                    seriesMin: seriesMin,
+                    seriesMax: seriesMax,
                     formatString,
-                    color: parsedSeries.fill,
+                    color: dataPointColor,
                     selected: false,
                     identity,
                     categoryIndex: i,
@@ -315,9 +365,18 @@ export class TornadoChart implements IVisual {
             categoryAxis: columnObjects["categoryAxis"] || sourceObjects["categoryAxis"] || metadataObjects["categoryAxis"]
         };
 
+        // Get default color from theme palette
+        // Reset palette position and get colors sequentially by using index-based keys
+        // This ensures series 0 gets color 0, series 1 gets color 1, etc.
+        colors.reset();
+        let defaultThemeColor: string;
+        for (let i = 0; i <= index; i++) {
+            defaultThemeColor = colors.getColor(`series${i}`).value;
+        }
+
         const fillColor = TornadoChart.getColor(
             TornadoChart.Properties.dataPoint.fill,
-            ["purple", "teal"][index],
+            defaultThemeColor,
             mergedObjects,
             colors
         );
@@ -336,7 +395,11 @@ export class TornadoChart implements IVisual {
             fill: fillColor,
             name: displayName,
             selectionId: selectionId,
-            categoryAxisEnd: categoryAxisEnd
+            categoryAxisEnd: categoryAxisEnd,
+            leftAxisMin: null,
+            leftAxisMax: null,
+            rightAxisMin: null,
+            rightAxisMax: null
         } as TornadoChartSeries;
     }
 
@@ -349,6 +412,11 @@ export class TornadoChart implements IVisual {
         return colorHelper.getColorForMeasure(objects, "");
     }
 
+    /**
+     * Gets the color for a specific data point, supporting conditional formatting.
+     * Checks for per-datapoint color from values objects (series-level conditional formatting),
+     * then category objects, then falls back to series color.
+     */
     private static getTextData(
         text: string,
         formattingOptions: BaseFontControlSettings,
@@ -394,7 +462,29 @@ export class TornadoChart implements IVisual {
     public colors: IColorPalette;
     public colorHelper: ColorHelper;
 
-    private columnPadding: number = 5;
+    /**
+     * Gets the theme foreground color for text/labels.
+     * Falls back to a default if not available.
+     */
+    private get themeForegroundColor(): string {
+        const extendedPalette = this.colors as ISandboxExtendedColorPalette;
+        return extendedPalette?.foreground?.value || "#333333";
+    }
+
+    /**
+     * Gets the theme background color.
+     * Falls back to white if not available.
+     */
+    private get themeBackgroundColor(): string {
+        const extendedPalette = this.colors as ISandboxExtendedColorPalette;
+        return extendedPalette?.background?.value || "#FFFFFF";
+    }
+
+    private get columnPadding(): number {
+        // Calculate padding as percentage of bar height
+        const spacingPercent = (this.formattingSettings?.bars?.layout?.barSpacing?.value ?? 10) / 100;
+        return this.heightColumn * spacingPercent;
+    }
     private leftLabelMargin: number = 4;
     private InnerTextHeightDelta: number = 2;
 
@@ -409,6 +499,7 @@ export class TornadoChart implements IVisual {
     private root: Selection<any>;
     private rootContainer: HTMLElement;
     private main: Selection<any>;
+    private plotAreaBackground: Selection<any>;
     private columns: Selection<any>;
     private columnsSelection: Selection<any>;
     private axes: Selection<any>;
@@ -449,8 +540,20 @@ export class TornadoChart implements IVisual {
 
     private get columnWidth(): number {
         return this.dataView.series.length === TornadoChart.MaxSeries
-            ? this.allColumnsWidth / 2
+            ? (this.allColumnsWidth - this.centerLineOffset * 2) / 2
             : this.allColumnsWidth;
+    }
+
+    private get centerLineOffset(): number {
+        // Returns half of the center line width if the center line is shown and has a color
+        const showCenterLine = this.formattingSettings?.centerLine?.show?.value ?? true;
+        const hasColor = !!this.formattingSettings?.centerLine?.color?.value?.value;
+        const lineWidth = this.formattingSettings?.centerLine?.width?.value ?? 1;
+        
+        if (this.dataView?.series?.length === TornadoChart.MaxSeries && showCenterLine && hasColor) {
+            return lineWidth / 2;
+        }
+        return 0;
     }
 
     constructor(options: VisualConstructorOptions) {
@@ -480,6 +583,12 @@ export class TornadoChart implements IVisual {
             .classed(TornadoChart.ClassName, true);
 
         const main: Selection<any> = this.main = root.append("g");
+
+        // Plot area background (rendered first so it's behind other elements)
+        this.plotAreaBackground = main
+            .append("rect")
+            .classed("plotAreaBackground", true);
+
         this.columns = main
             .append("g")
             .classed(TornadoChart.Columns.className, true)
@@ -537,10 +646,76 @@ export class TornadoChart implements IVisual {
             return;
         }
 
-        //Populate slices for DataColors and CategoryAxisCard 
+        //Populate slices for DataColors
         this.formattingSettings.populateDataColorSlice(this.dataView.series);
-        this.formattingSettings.populateCategoryAxisSlice(this.dataView.series);
         this.formattingSettings.setVisibilityOfLegendCardSettings(this.dataView.legend);
+        
+        // Disable axis settings when normalize is enabled
+        const isNormalized = this.formattingSettings?.axis?.normalize?.value ?? false;
+        this.formattingSettings.axis.leftAutoRange.disabled = isNormalized;
+        this.formattingSettings.axis.rightAutoRange.disabled = isNormalized;
+        
+        // Hide min/max controls when normalize is enabled OR when auto range is ON
+        const leftAutoRange = this.formattingSettings?.axis?.leftAutoRange?.value ?? true;
+        const rightAutoRange = this.formattingSettings?.axis?.rightAutoRange?.value ?? true;
+        
+        this.formattingSettings.axis.leftMin.visible = !isNormalized && !leftAutoRange;
+        this.formattingSettings.axis.leftMax.visible = !isNormalized && !leftAutoRange;
+        this.formattingSettings.axis.rightMin.visible = !isNormalized && !rightAutoRange;
+        this.formattingSettings.axis.rightMax.visible = !isNormalized && !rightAutoRange;
+        
+        // Add validation: min must be less than max (when both are set)
+        const leftMinVal = this.formattingSettings.axis.leftMin.value;
+        const leftMaxVal = this.formattingSettings.axis.leftMax.value;
+        const rightMinVal = this.formattingSettings.axis.rightMin.value;
+        const rightMaxVal = this.formattingSettings.axis.rightMax.value;
+        
+        // Set max validator on min fields (min cannot exceed max)
+        if (leftMaxVal !== null && leftMaxVal !== undefined && !isNaN(leftMaxVal)) {
+            this.formattingSettings.axis.leftMin.options = {
+                maxValue: {
+                    type: powerbiVisualsApi.visuals.ValidatorType.Max,
+                    value: leftMaxVal
+                }
+            };
+        } else {
+            this.formattingSettings.axis.leftMin.options = undefined;
+        }
+        
+        // Set min validator on max fields (max cannot be less than min)
+        if (leftMinVal !== null && leftMinVal !== undefined && !isNaN(leftMinVal)) {
+            this.formattingSettings.axis.leftMax.options = {
+                minValue: {
+                    type: powerbiVisualsApi.visuals.ValidatorType.Min,
+                    value: leftMinVal
+                }
+            };
+        } else {
+            this.formattingSettings.axis.leftMax.options = undefined;
+        }
+        
+        // Same for right axis
+        if (rightMaxVal !== null && rightMaxVal !== undefined && !isNaN(rightMaxVal)) {
+            this.formattingSettings.axis.rightMin.options = {
+                maxValue: {
+                    type: powerbiVisualsApi.visuals.ValidatorType.Max,
+                    value: rightMaxVal
+                }
+            };
+        } else {
+            this.formattingSettings.axis.rightMin.options = undefined;
+        }
+        
+        if (rightMinVal !== null && rightMinVal !== undefined && !isNaN(rightMinVal)) {
+            this.formattingSettings.axis.rightMax.options = {
+                minValue: {
+                    type: powerbiVisualsApi.visuals.ValidatorType.Min,
+                    value: rightMinVal
+                }
+            };
+        } else {
+            this.formattingSettings.axis.rightMax.options = undefined;
+        }
         
         this.render(options.formatMode);
         this.applyOnObjectFormatting(options.formatMode, options.type, options.subSelections);
@@ -562,9 +737,25 @@ export class TornadoChart implements IVisual {
         }
         const elementsTranslate: string = translate(translateX, 0);
 
+        const rootHeight = TornadoChart.calculateRootHeight(this.dataView.dataPoints);
+
         this.root
-            .attr("height", TornadoChart.calculateRootHeight(this.dataView.dataPoints))
+            .attr("height", rootHeight)
             .attr("width", this.viewport.width + this.margin.left + this.margin.right);
+
+        // Update plot area background
+        const bgColor = this.formattingSettings?.plotArea?.backgroundColor?.value?.value;
+        // In high contrast mode, use transparent background or high contrast background
+        const effectiveBgColor = this.colorHelper.isHighContrast 
+            ? (bgColor ? this.colorHelper.getHighContrastColor("background", bgColor) : "transparent")
+            : (bgColor || "transparent");
+        this.plotAreaBackground
+            .attr("transform", elementsTranslate)
+            .attr("x", 0)
+            .attr("y", 0)
+            .attr("width", this.allColumnsWidth)
+            .attr("height", rootHeight)
+            .style("fill", effectiveBgColor);
 
         this.columns
             .attr("transform", elementsTranslate);
@@ -603,16 +794,19 @@ export class TornadoChart implements IVisual {
 
     private static getLegendData(series: TornadoChartSeries[], hasDynamicSeries: boolean): LegendData {
         let legendDataPoints: LegendDataPoint[] = [];
-        if (hasDynamicSeries)
-            legendDataPoints = series.map((series: TornadoChartSeries) => {
+        
+        // Show legend for both dynamic series (from Legend field) and static series (multiple measures)
+        if (series.length > 0) {
+            legendDataPoints = series.map((s: TornadoChartSeries) => {
                 return <LegendDataPoint>{
-                    label: series.name,
-                    color: series.fill,
+                    label: s.name,
+                    color: s.fill,
                     icon: MarkerShape.circle,
                     selected: false,
-                    identity: series.selectionId
+                    identity: s.selectionId
                 };
             });
+        }
 
         return {
             dataPoints: legendDataPoints
@@ -638,6 +832,7 @@ export class TornadoChart implements IVisual {
     }
 
     private bindBehaviorToVisual(isFormatMode: boolean): void {
+        const negativeBarsTransparency = this.formattingSettings?.negativeBars?.color?.transparency?.value ?? 0;
         const behaviorOptions: TornadoBehaviorOptions = {
             columns: this.columnsSelection,
             clearCatcher: this.root,
@@ -646,6 +841,7 @@ export class TornadoChart implements IVisual {
             legendClearCatcher: this.legendSelection,
             gradients: this.gradients,
             isFormatMode,
+            negativeBarsTransparency,
         };
         this.behavior.bindEvents(behaviorOptions);
         this.behavior.renderSelection();
@@ -702,9 +898,21 @@ export class TornadoChart implements IVisual {
             ? length
             : Math.floor(this.viewport.height / TornadoChart.CategoryMinHeight);
 
-        this.heightColumn = numberOfDisplayedRows > 0 
-            ? (this.viewport.height - (numberOfDisplayedRows - 1) * this.columnPadding) / (numberOfDisplayedRows)
-            : 0;
+        // Get spacing percentage (0-50%) and calculate row height
+        const spacingPercent = (this.formattingSettings?.bars?.layout?.barSpacing?.value ?? 10) / 100;
+        
+        // Total height = numberOfRows * barHeight + (numberOfRows - 1) * spacing
+        // spacing = barHeight * spacingPercent
+        // So: viewportHeight = numberOfRows * barHeight + (numberOfRows - 1) * barHeight * spacingPercent
+        // viewportHeight = barHeight * (numberOfRows + (numberOfRows - 1) * spacingPercent)
+        // barHeight = viewportHeight / (numberOfRows + (numberOfRows - 1) * spacingPercent)
+        
+        if (numberOfDisplayedRows > 0) {
+            const divisor = numberOfDisplayedRows + (numberOfDisplayedRows - 1) * spacingPercent;
+            this.heightColumn = this.viewport.height / divisor;
+        } else {
+            this.heightColumn = 0;
+        }
 
         this.isScrollVisible = numberOfDisplayedRows < length;
         this.rootContainer.style.overflowY = this.isScrollVisible ? "scroll" : "hidden";
@@ -734,13 +942,25 @@ export class TornadoChart implements IVisual {
 
             const shiftToMiddle: boolean = i < categoriesLength && maxSeries;
             const shiftToRight: boolean = i > categoriesLength - 1;
-            const widthOfColumn: number = this.getColumnWidth(dataPoint.value, dataPoint.minValue, dataPoint.maxValue, this.columnWidth);
-            let dx: number = (this.columnWidth - widthOfColumn) * Number(shiftToMiddle) + this.columnWidth * Number(shiftToRight)/* - scrollBarWidth*/;
+            const isNormalized = this.formattingSettings?.axis?.normalize?.value ?? false;
+            // When normalized, use series-specific min/max so each series scales to its own 100%
+            const minForWidth = isNormalized ? dataPoint.seriesMin : dataPoint.minValue;
+            const maxForWidth = isNormalized ? dataPoint.seriesMax : dataPoint.maxValue;
+            const widthOfColumn: number = this.getColumnWidth(dataPoint.value, minForWidth, maxForWidth, this.columnWidth, isNormalized);
+            const centerOffset = this.centerLineOffset;
+            // For left bars (shiftToMiddle): position them to end before the center line
+            // For right bars (shiftToRight): position them to start after the center line
+            let dx: number = (this.columnWidth - widthOfColumn) * Number(shiftToMiddle) + (this.columnWidth + centerOffset * 2) * Number(shiftToRight)/* - scrollBarWidth*/;
             dx = Math.max(dx, 0);
 
             const highlighted: boolean = this.dataView.hasHighlights && dataPoint.highlight;
             const highlightOffset: number = highlighted ? heightColumn * (1 - TornadoChart.HighlightedShapeFactor) / 2 : 0;
             const dy: number = (heightColumn + this.columnPadding) * (i % categoriesLength) + highlightOffset;
+
+            // Calculate percentage based on the max value used for width calculation
+            const absValue = Math.abs(dataPoint.value);
+            const absMax = Math.abs(maxForWidth);
+            const percentage = absMax > 0 ? (absValue / absMax) * 100 : 0;
 
             const label: LabelData = this.getLabelData(
                 dataPoint.value,
@@ -748,7 +968,8 @@ export class TornadoChart implements IVisual {
                 widthOfColumn,
                 shiftToMiddle,
                 dataPoint.formatString,
-                labelFormatter);
+                labelFormatter,
+                percentage);
 
             dataPoint.dx = dx;
             dataPoint.dy = dy;
@@ -762,9 +983,15 @@ export class TornadoChart implements IVisual {
     }
 
     private renderColumns(columnsData: TornadoChartPoint[], isFormatMode: boolean): void {  
+        // Filter out negative values if negative bars are disabled
+        const showNegativeBars = this.formattingSettings?.negativeBars?.show?.value ?? true;
+        const filteredColumnsData = showNegativeBars 
+            ? columnsData 
+            : columnsData.filter(p => p.value >= 0);
+
         const columnsSelection: Selection<any> = this.columns
             .selectAll(TornadoChart.Column.selectorName)
-            .data(columnsData);
+            .data(filteredColumnsData);
 
         // defs should only contain required gradients,
         // otherwise gradients are duplicated
@@ -772,7 +999,7 @@ export class TornadoChart implements IVisual {
 
         this.gradients = this.columns.append("defs")
             .selectAll("linearGradient")
-            .data(columnsData)
+            .data(filteredColumnsData)
             .enter()
             .append("linearGradient")
             .attr("id", (p: TornadoChartPoint) => "gradient-" + p.uniqId) // Use the index of the column as the id
@@ -783,17 +1010,87 @@ export class TornadoChart implements IVisual {
 
         const columnsSelectionMerged = columnsSelection
             .enter()
-            .append("svg:rect")
+            .append("svg:path")
             .merge(columnsSelection);
 
         columnsSelectionMerged.classed(TornadoChart.Column.className, true);
 
         columnsSelectionMerged
-            .style("stroke", (p: TornadoChartPoint) => p.color)
+            .style("stroke", (p: TornadoChartPoint) => {
+                // Use negative bar settings if value is negative and setting is defined
+                let strokeColor: string;
+                if (p.value < 0 && this.formattingSettings?.negativeBars?.border?.borderColor?.value?.value) {
+                    strokeColor = this.formattingSettings.negativeBars.border.borderColor.value.value;
+                } else {
+                    const borderColor = this.formattingSettings?.bars?.border?.borderColor?.value?.value;
+                    strokeColor = borderColor || p.color;
+                }
+                // Use high contrast foreground color when in high contrast mode
+                return this.colorHelper.isHighContrast 
+                    ? this.colorHelper.getHighContrastColor("foreground", strokeColor) 
+                    : strokeColor;
+            })
+            .style("stroke-width", (p: TornadoChartPoint) => {
+                // In high contrast mode, always use at least 2px stroke for visibility
+                if (this.colorHelper.isHighContrast) {
+                    return 2;
+                }
+                // Use negative bar settings if value is negative and setting is defined
+                if (p.value < 0 && this.formattingSettings?.negativeBars?.border?.borderWidth?.value != null) {
+                    return this.formattingSettings.negativeBars.border.borderWidth.value;
+                }
+                const borderWidth = this.formattingSettings?.bars?.border?.borderWidth?.value;
+                return borderWidth || 0;
+            })
+            .style("fill-opacity", (p: TornadoChartPoint) => {
+                // Apply transparency for negative bars
+                if (p.value < 0) {
+                    const transparency = this.formattingSettings?.negativeBars?.color?.transparency?.value || 0;
+                    return 1 - (transparency / 100);
+                }
+                return 1;
+            })
             .style("fill", (p: TornadoChartPoint) => "url(#gradient-" + p.uniqId + ")")
             .attr("transform", (p: TornadoChartPoint) => translateAndRotate(p.dx, p.dy, p.px, p.py, p.angle))
-            .attr("height", (p: TornadoChartPoint) => p.height)
-            .attr("width", (p: TornadoChartPoint) => p.width)
+            .attr("d", (p: TornadoChartPoint) => {
+                // Create a path with rounded corners only on the outside (right side of each bar)
+                // Since left bars are rotated 180°, their "right" side appears on the left visually
+                // Right bars are not rotated, so their right side is on the right
+                
+                // Get border width to inset the stroke (erode into the bar instead of expanding it)
+                let borderWidth = this.formattingSettings?.bars?.border?.borderWidth?.value || 0;
+                if (p.value < 0 && this.formattingSettings?.negativeBars?.border?.borderWidth?.value != null) {
+                    borderWidth = this.formattingSettings.negativeBars.border.borderWidth.value;
+                }
+                // In high contrast mode, always use at least 2px stroke
+                if (this.colorHelper.isHighContrast) {
+                    borderWidth = 2;
+                }
+                const inset = borderWidth / 2; // SVG strokes are centered, so inset by half
+                
+                // Calculate inset dimensions
+                const w = Math.max(0, p.width - borderWidth);
+                const h = Math.max(0, p.height - borderWidth);
+                
+                // Use negative bar corner radius if value is negative and setting is defined
+                let cornerRadius = this.formattingSettings?.bars?.border?.cornerRadius?.value || 0;
+                if (p.value < 0 && this.formattingSettings?.negativeBars?.border?.cornerRadius?.value != null) {
+                    cornerRadius = this.formattingSettings.negativeBars.border.cornerRadius.value;
+                }
+                // Adjust corner radius for the inset
+                const r = Math.max(0, Math.min(cornerRadius - inset, w / 2, h / 2));
+                
+                // Round only the right corners (top-right and bottom-right)
+                // Left corners (top-left and bottom-left) remain square
+                // Path is offset by inset to keep stroke inside original bounds
+                return `M ${inset},${inset} 
+                        L ${inset + w - r},${inset} 
+                        Q ${inset + w},${inset} ${inset + w},${inset + r} 
+                        L ${inset + w},${inset + h - r} 
+                        Q ${inset + w},${inset + h} ${inset + w - r},${inset + h} 
+                        L ${inset},${inset + h} 
+                        L ${inset},${inset} Z`;
+            })
             .attr("tabindex", 0)
             .attr("role", "option")
             .attr("aria-label", (d: TornadoChartPoint) => { 
@@ -823,11 +1120,26 @@ export class TornadoChart implements IVisual {
             .classed(HtmlSubSelectableClass, isFormatMode);
     }
 
-    private getColumnWidth(value: number, minValue: number, maxValue: number, width: number): number {
+    private getColumnWidth(value: number, minValue: number, maxValue: number, width: number, isNormalized: boolean = false): number {
         if (minValue === maxValue) {
             return width;
         }
-        const columnWidth = width * (value - minValue) / (maxValue - minValue);
+        
+        // Use absolute value for bar width calculation so negative values still produce visible bars
+        const absValue = Math.abs(value);
+        
+        if (isNormalized) {
+            // For normalized view, each bar is scaled relative to its own max
+            // so the largest bar in each series takes the full width
+            const absMax = Math.max(Math.abs(minValue), Math.abs(maxValue));
+            if (absMax === 0) return 0;
+            return width * (absValue / absMax);
+        }
+        
+        const absMin = 0;  // For tornado chart, bars start from 0
+        const absMax = Math.max(Math.abs(minValue), Math.abs(maxValue));  // Use the larger absolute value as max
+        
+        const columnWidth = width * (absValue - absMin) / (absMax - absMin);
 
         // In case the user specifies a custom category axis end we limit the
         // column width to the maximum available width
@@ -840,35 +1152,65 @@ export class TornadoChart implements IVisual {
         columnWidth: number,
         isColumnPositionLeft: boolean,
         formatStringProp: string,
-        labelFormatter: TornadoChartLabelFormatter): LabelData {
+        labelFormatter: TornadoChartLabelFormatter,
+        percentage: number): LabelData {
 
         const fontSize: number = this.formattingSettings.dataLabels.font.fontSize.value;
+        const displayFormat: string = this.formattingSettings.dataLabels.displayFormat?.value?.value?.toString() || "value";
+        const precision: number = this.formattingSettings.dataLabels.labelPrecision.value;
 
         let dx: number,
-            color: string = this.formattingSettings.dataLabels.insideFill.value.value;
+            color: string = this.formattingSettings.dataLabels.insideFill.value.value || this.themeBackgroundColor;
 
         const maxOutsideLabelWidth: number = isColumnPositionLeft
             ? dxColumn - this.leftLabelMargin
             : this.allColumnsWidth - (dxColumn + columnWidth + this.leftLabelMargin);
         const maxLabelWidth: number = Math.max(maxOutsideLabelWidth, columnWidth - this.leftLabelMargin);
 
+        // Format the value based on display format setting
+        const formattedValue = labelFormatter.getLabelValueFormatter(formatStringProp).format(value);
+        const formattedPercentage = percentage.toFixed(precision) + "%";
+        
+        let labelText: string;
+        switch (displayFormat) {
+            case "percentage":
+                labelText = formattedPercentage;
+                break;
+            case "both":
+                labelText = `${formattedValue} (${formattedPercentage})`;
+                break;
+            case "value":
+            default:
+                labelText = formattedValue;
+                break;
+        }
+
         const textProperties: TextProperties = {
             fontFamily: this.formattingSettings.dataLabels.font.fontFamily.value,
             fontSize: PixelConverter.fromPoint(fontSize),
-            text: labelFormatter.getLabelValueFormatter(formatStringProp).format(value)
+            text: labelText
         };
         const valueAfterValueFormatter: string = textMeasurementService.getTailoredTextOrDefault(textProperties, maxLabelWidth);
         const textDataAfterValueFormatter: TextData = TornadoChart.getTextData(valueAfterValueFormatter, this.formattingSettings.dataLabels.font, true, false);
 
         if (columnWidth > textDataAfterValueFormatter.width + TornadoChart.LabelPadding) {
             dx = dxColumn + columnWidth / 2 - textDataAfterValueFormatter.width / 2;
+            // Use negative fill color for negative values when label is inside
+            if (value < 0) {
+                color = this.formattingSettings.dataLabels.negativeFill.value.value || "#D64550";
+            }
         } else {
             if (isColumnPositionLeft) {
                 dx = dxColumn - this.leftLabelMargin - textDataAfterValueFormatter.width;
             } else {
                 dx = dxColumn + columnWidth + this.leftLabelMargin;
             }
-            color = this.formattingSettings.dataLabels.outsideFill.value.value;
+            // Use negative fill color for negative values, otherwise use outside fill
+            if (value < 0) {
+                color = this.formattingSettings.dataLabels.negativeFill.value.value || "#D64550";
+            } else {
+                color = this.formattingSettings.dataLabels.outsideFill.value.value || this.themeForegroundColor;
+            }
         }
 
         return {
@@ -884,7 +1226,10 @@ export class TornadoChart implements IVisual {
                 .select(TornadoChart.Axes.selectorName)
                 .selectAll(TornadoChart.Axis.selectorName);
 
-        if (this.dataView.series.length !== TornadoChart.MaxSeries) {
+        // Check if center line should be shown
+        const showCenterLine = this.formattingSettings?.centerLine?.show?.value ?? true;
+        
+        if (this.dataView.series.length !== TornadoChart.MaxSeries || !showCenterLine) {
             axesElements.remove();
             return;
         }
@@ -897,9 +1242,24 @@ export class TornadoChart implements IVisual {
             .append("svg:line")
             .merge(axesSelection);
 
+        const lineColor = this.formattingSettings?.centerLine?.color?.value?.value;
+        const lineWidth = this.formattingSettings?.centerLine?.width?.value ?? 1;
+
+        // If no color is set, hide the line
+        if (!lineColor) {
+            axesElements.remove();
+            return;
+        }
+
+        // Use high contrast foreground color when in high contrast mode
+        const effectiveLineColor = this.colorHelper.isHighContrast 
+            ? this.colorHelper.getHighContrastColor("foreground", lineColor) 
+            : lineColor;
+
         axesSelectionMerged
             .classed(TornadoChart.Axis.className, true)
-            .style("stroke", this.colorHelper.getHighContrastColor());
+            .style("stroke", effectiveLineColor)
+            .style("stroke-width", lineWidth);
 
         axesSelectionMerged
             .attr("x1", (data: LineData) => data.x1)
@@ -1003,7 +1363,7 @@ export class TornadoChart implements IVisual {
 
     private renderCategories(isFormatMode: boolean): void {
         const formattingSettings: TornadoChartSettingsModel = this.formattingSettings,
-            color: string = formattingSettings.category.fill.value.value,
+            color: string = formattingSettings.category.fill.value.value || this.themeForegroundColor,
             fontSizeInPx: string = PixelConverter.fromPoint( formattingSettings.category.font.fontSize.value),
             position: string = this.formattingSettings.category.positionDropdown.value.value.toString(),
 
@@ -1094,7 +1454,7 @@ export class TornadoChart implements IVisual {
                 return;
             }
 
-            const legendLabelsColor: string = legendSettings.text.labelColor.value.value;
+            const legendLabelsColor: string = legendSettings.text.labelColor.value.value || this.themeForegroundColor;
             const legendData: LegendData = {
                 title: legend.title,
                 dataPoints: legend.dataPoints,
@@ -1115,6 +1475,12 @@ export class TornadoChart implements IVisual {
 
             this.legend.drawLegend(legendData, { ...this.viewport });
 
+            // Apply position class to legend for CSS styling
+            const position = legendSettings.options.position.value.value;
+            this.legendSelection
+                .classed("legend-position-bottom", position === LegendPosition[LegendPosition.Bottom])
+                .classed("legend-position-bottomCenter", position === LegendPosition[LegendPosition.BottomCenter]);
+
             if (legendData.dataPoints.length > 0 && legendSettings.show.value) {
                 this.updateViewport();
             }
@@ -1122,6 +1488,9 @@ export class TornadoChart implements IVisual {
         else {
             this.legend.reset();
             this.legend.drawLegend({ dataPoints: [] }, this.viewport);
+            this.legendSelection
+                .classed("legend-position-bottom", false)
+                .classed("legend-position-bottomCenter", false);
         }
 
         this.legendItems = this.legendSelection.selectAll(TornadoChart.LegendItemSelector.selectorName);
