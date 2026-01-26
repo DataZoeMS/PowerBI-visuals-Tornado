@@ -179,7 +179,7 @@ class NegativeBarsBorderGroup extends formattingSettings.Group {
         name: "cornerRadius",
         displayName: "Rounded corners (px)",
         displayNameKey: "Visual_CornerRadius",
-        value: null,
+        value: 10,
         options: {
             minValue: {
                 type: powerbiVisualsApi.visuals.ValidatorType.Min,
