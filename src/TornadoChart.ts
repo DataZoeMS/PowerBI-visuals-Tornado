@@ -480,10 +480,10 @@ export class TornadoChart implements IVisual {
     }
 
     private get columnPadding(): number {
-        // Calculate padding as percentage of bar height
-        const spacingPercent = (this.formattingSettings?.bars?.layout?.barSpacing?.value ?? 10) / 100;
-        return this.heightColumn * spacingPercent;
+        // Return the pre-calculated padding value from computeHeightColumn
+        return this._columnPadding;
     }
+    private _columnPadding: number = 5;
     private leftLabelMargin: number = 4;
     private InnerTextHeightDelta: number = 2;
 
@@ -909,8 +909,11 @@ export class TornadoChart implements IVisual {
         if (numberOfDisplayedRows > 0) {
             const divisor = numberOfDisplayedRows + (numberOfDisplayedRows - 1) * spacingPercent;
             this.heightColumn = this.viewport.height / divisor;
+            // Calculate padding as percentage of bar height (avoids circular dependency)
+            this._columnPadding = this.heightColumn * spacingPercent;
         } else {
             this.heightColumn = 0;
+            this._columnPadding = 5;
         }
 
         this.isScrollVisible = numberOfDisplayedRows < length;
