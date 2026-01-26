@@ -245,7 +245,6 @@ export class TornadoChart implements IVisual {
 
                 // Determine axis settings based on series index (0 = left, 1 = right)
                 const isLeftSeries = seriesIndex === 0;
-                const isNormalized = formattingSettings?.axis?.normalize?.value ?? false;
                 
                 // Check auto range toggles
                 const useAutoRange = isLeftSeries
@@ -317,7 +316,7 @@ export class TornadoChart implements IVisual {
             categories: categoriesLabels,
             series: series,
             labelFormatter: labelFormatter,
-            legend: TornadoChart.getLegendData(series, hasDynamicSeries),
+            legend: TornadoChart.getLegendData(series),
             dataPoints: dataPoints,
             maxLabelsWidth: Math.max(...categoriesLabels.map(x => x.width)),
             hasDynamicSeries: hasDynamicSeries,
@@ -792,7 +791,7 @@ export class TornadoChart implements IVisual {
         return Math.min(Math.max(0, precision), TornadoChart.MaxPrecision);
     }
 
-    private static getLegendData(series: TornadoChartSeries[], hasDynamicSeries: boolean): LegendData {
+    private static getLegendData(series: TornadoChartSeries[]): LegendData {
         let legendDataPoints: LegendDataPoint[] = [];
         
         // Show legend for both dynamic series (from Legend field) and static series (multiple measures)
