@@ -140,6 +140,7 @@ export class TornadoChart implements IVisual {
     private static DefaultLabelSettingsLabelPrecision = null;
     private static MaxAngle: number = 180;
     private static MinAngle: number = 0;
+    private static HighContrastStrokeWidth: number = 2;
 
     public static ScrollBarWidth = 22;
     public static DefaultLabelsWidth = 3;
@@ -260,7 +261,7 @@ export class TornadoChart implements IVisual {
 
                 // Helper to check if a value is set (not null/undefined/NaN)
                 const isValueSet = (val: number | null | undefined): val is number =>
-                    val !== null && val !== undefined && !isNaN(val);
+                    val != null && !Number.isNaN(val);
 
                 // Use user-specified values if auto range is OFF and value is set, otherwise use data-driven values
                 // This allows setting just min OR just max independently
@@ -276,8 +277,9 @@ export class TornadoChart implements IVisual {
                 // Use the series color (from parseSeries which reads from theme/settings)
                 // Override with negative bar color if value is negative and negative fill is defined
                 let dataPointColor = parsedSeries.fill;
-                if (value < 0 && formattingSettings?.negativeBars?.color?.fill?.value?.value) {
-                    dataPointColor = formattingSettings.negativeBars.color.fill.value.value;
+                const negativeBarColor = formattingSettings?.negativeBars?.color?.fill?.value?.value;
+                if (value < 0 && negativeBarColor != null) {
+                    dataPointColor = negativeBarColor;
                 }
 
                 const dataPointCommon = {
@@ -997,7 +999,9 @@ export class TornadoChart implements IVisual {
             const shiftToMiddle: boolean = i < categoriesLength && maxSeries;
             const shiftToRight: boolean = i > categoriesLength - 1;
             const isNormalized = this.formattingSettings?.axis?.normalize?.value ?? false;
-            // When normalized, use series-specific min/max so each series scales to its own 100%
+            // When normalized, use series-specific min/max so each series scales to its own 100%.
+            // NOTE: bar widths (and derived percentages) are only comparable within the same series;
+            // bars from different series may appear similar in width even when their absolute values differ greatly.
             const minForWidth = isNormalized ? dataPoint.seriesMin : dataPoint.minValue;
             const maxForWidth = isNormalized ? dataPoint.seriesMax : dataPoint.maxValue;
             const widthOfColumn: number = widths[i];
@@ -1038,6 +1042,28 @@ export class TornadoChart implements IVisual {
         }
     }
 
+    /**
+     * Get border color and width for a data point, respecting negative-bar overrides.
+     */
+    private getBorderSettings(p: TornadoChartPoint): { color: string; width: number } {
+        const negBorder = this.formattingSettings?.negativeBars?.border;
+        const barsBorder = this.formattingSettings?.bars?.border;
+
+        const isNegativeOverride = p.value < 0;
+        const negColor = negBorder?.borderColor?.value?.value;
+        const negWidth = negBorder?.borderWidth?.value;
+
+        const color: string = (isNegativeOverride && negColor)
+            ? negColor
+            : (barsBorder?.borderColor?.value?.value || p.color);
+
+        const width: number = (isNegativeOverride && negWidth != null)
+            ? negWidth
+            : (barsBorder?.borderWidth?.value || 0);
+
+        return { color, width };
+    }
+
     private renderColumns(columnsData: TornadoChartPoint[], isFormatMode: boolean): void {  
         // Filter out negative values if negative bars are disabled
         const showNegativeBars = this.formattingSettings?.negativeBars?.show?.value ?? true;
@@ -1073,30 +1099,18 @@ export class TornadoChart implements IVisual {
 
         columnsSelectionMerged
             .style("stroke", (p: TornadoChartPoint) => {
-                // Use negative bar settings if value is negative and setting is defined
-                let strokeColor: string;
-                if (p.value < 0 && this.formattingSettings?.negativeBars?.border?.borderColor?.value?.value) {
-                    strokeColor = this.formattingSettings.negativeBars.border.borderColor.value.value;
-                } else {
-                    const borderColor = this.formattingSettings?.bars?.border?.borderColor?.value?.value;
-                    strokeColor = borderColor || p.color;
-                }
+                const { color: strokeColor } = this.getBorderSettings(p);
                 // Use high contrast foreground color when in high contrast mode
                 return this.colorHelper.isHighContrast 
                     ? this.colorHelper.getHighContrastColor("foreground", strokeColor) 
                     : strokeColor;
             })
             .style("stroke-width", (p: TornadoChartPoint) => {
-                // In high contrast mode, always use at least 2px stroke for visibility
+                // In high contrast mode, always use the high-contrast stroke width for visibility
                 if (this.colorHelper.isHighContrast) {
-                    return 2;
+                    return TornadoChart.HighContrastStrokeWidth;
                 }
-                // Use negative bar settings if value is negative and setting is defined
-                if (p.value < 0 && this.formattingSettings?.negativeBars?.border?.borderWidth?.value != null) {
-                    return this.formattingSettings.negativeBars.border.borderWidth.value;
-                }
-                const borderWidth = this.formattingSettings?.bars?.border?.borderWidth?.value;
-                return borderWidth || 0;
+                return this.getBorderSettings(p).width;
             })
             .style("fill-opacity", (p: TornadoChartPoint) => {
                 // Apply transparency for negative bars
@@ -1114,13 +1128,10 @@ export class TornadoChart implements IVisual {
                 // Right bars are not rotated, so their right side is on the right
                 
                 // Get border width to inset the stroke (erode into the bar instead of expanding it)
-                let borderWidth = this.formattingSettings?.bars?.border?.borderWidth?.value || 0;
-                if (p.value < 0 && this.formattingSettings?.negativeBars?.border?.borderWidth?.value != null) {
-                    borderWidth = this.formattingSettings.negativeBars.border.borderWidth.value;
-                }
-                // In high contrast mode, always use at least 2px stroke
+                let borderWidth = this.getBorderSettings(p).width;
+                // In high contrast mode, always use the high-contrast stroke width
                 if (this.colorHelper.isHighContrast) {
-                    borderWidth = 2;
+                    borderWidth = TornadoChart.HighContrastStrokeWidth;
                 }
                 const inset = borderWidth / 2; // SVG strokes are centered, so inset by half
                 
