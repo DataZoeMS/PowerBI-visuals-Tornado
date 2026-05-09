@@ -65,7 +65,7 @@ class BarsBorderGroup extends formattingSettings.Group {
         name: "cornerRadius",
         displayName: "Rounded corners (px)",
         displayNameKey: "Visual_CornerRadius",
-        value: 10,
+        value: 4,
         options: {
             minValue: {
                 type: powerbiVisualsApi.visuals.ValidatorType.Min,
@@ -179,7 +179,7 @@ class NegativeBarsBorderGroup extends formattingSettings.Group {
         name: "cornerRadius",
         displayName: "Rounded corners (px)",
         displayNameKey: "Visual_CornerRadius",
-        value: 10,
+        value: 4,
         options: {
             minValue: {
                 type: powerbiVisualsApi.visuals.ValidatorType.Min,
@@ -203,7 +203,7 @@ class NegativeBarsCardSettings extends CompositeCard {
         name: "show",
         displayName: "Show",
         displayNameKey: "Visual_Show",
-        value: false
+        value: true
     });
 
     topLevelSlice? = this.show;
@@ -333,6 +333,14 @@ const labelDisplayFormatOptions: IEnumMember[] = [
     { value: "both", displayName: "Value (%)" }
 ];
 
+const labelPositionOptions: IEnumMember[] = [
+    { value: "auto", displayName: "Auto" },
+    { value: "insideEnd", displayName: "Inside end" },
+    { value: "outsideEnd", displayName: "Outside end" },
+    { value: "insideCenter", displayName: "Inside center" },
+    { value: "insideBase", displayName: "Inside base" }
+];
+
 export class DataLabelSettings extends Card {
     show = new formattingSettings.ToggleSwitch({
         name: "show",
@@ -351,6 +359,14 @@ export class DataLabelSettings extends Card {
         value: labelDisplayFormatOptions[0]
     });
 
+    labelPosition = new formattingSettings.ItemDropdown({
+        name: "labelPosition",
+        displayName: "Position",
+        displayNameKey: "Visual_DataLabels_Position",
+        items: labelPositionOptions,
+        value: labelPositionOptions[0]
+    });
+
     font: formattingSettings.FontControl = new BaseFontControlSettings(9);
 
     labelPrecision = new formattingSettings.NumUpDown({
@@ -366,6 +382,23 @@ export class DataLabelSettings extends Card {
             maxValue: {
                 type: powerbiVisualsApi.visuals.ValidatorType.Max,
                 value: 25,
+            }
+        }
+    });
+
+    percentagePrecision = new formattingSettings.NumUpDown({
+        name: "percentagePrecision",
+        displayName: "Percentage decimal places",
+        displayNameKey: "Visual_DataLabels_PercentageDecimalPlaces",
+        value: 0,
+        options: {
+            minValue: {
+                type: powerbiVisualsApi.visuals.ValidatorType.Min,
+                value: 0,
+            },
+            maxValue: {
+                type: powerbiVisualsApi.visuals.ValidatorType.Max,
+                value: 10,
             }
         }
     });
@@ -401,7 +434,7 @@ export class DataLabelSettings extends Card {
     name: string = "labels";
     displayName: string = "Data labels";
     displayNameKey: string = "Visual_DataLabels";
-    slices = [this.displayFormat, this.font, this.labelPrecision, this.labelDisplayUnits, this.insideFill, this.outsideFill, this.negativeFill];
+    slices = [this.displayFormat, this.labelPosition, this.font, this.labelDisplayUnits, this.labelPrecision, this.percentagePrecision, this.insideFill, this.outsideFill, this.negativeFill];
 }
 
 interface IEnumMemberWithDisplayNameKey extends IEnumMember{

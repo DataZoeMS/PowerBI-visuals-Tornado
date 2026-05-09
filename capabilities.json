@@ -247,8 +247,24 @@
                         ]
                     }
                 },
+                "labelPosition": {
+                    "type": {
+                        "enumeration": [
+                            { "value": "auto", "displayName": "Auto" },
+                            { "value": "insideEnd", "displayName": "Inside end" },
+                            { "value": "outsideEnd", "displayName": "Outside end" },
+                            { "value": "insideCenter", "displayName": "Inside center" },
+                            { "value": "insideBase", "displayName": "Inside base" }
+                        ]
+                    }
+                },
                 "labelPrecision": {
                     "placeHolderText": "Auto",
+                    "type": {
+                        "integer": true
+                    }
+                },
+                "percentagePrecision": {
                     "type": {
                         "integer": true
                     }

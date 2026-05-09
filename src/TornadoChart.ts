@@ -664,10 +664,17 @@ export class TornadoChart implements IVisual {
         this.formattingSettings.axis.rightMax.visible = !isNormalized && !rightAutoRange;
         
         // Add validation: min must be less than max (when both are set)
+        // These validators are recalculated on every update() to stay synchronized with current values
         const leftMinVal = this.formattingSettings.axis.leftMin.value;
         const leftMaxVal = this.formattingSettings.axis.leftMax.value;
         const rightMinVal = this.formattingSettings.axis.rightMin.value;
         const rightMaxVal = this.formattingSettings.axis.rightMax.value;
+        
+        // Reset all validators first to ensure no stale constraints remain
+        this.formattingSettings.axis.leftMin.options = undefined;
+        this.formattingSettings.axis.leftMax.options = undefined;
+        this.formattingSettings.axis.rightMin.options = undefined;
+        this.formattingSettings.axis.rightMax.options = undefined;
         
         // Set max validator on min fields (min cannot exceed max)
         if (leftMaxVal !== null && leftMaxVal !== undefined && !isNaN(leftMaxVal)) {
@@ -677,8 +684,6 @@ export class TornadoChart implements IVisual {
                     value: leftMaxVal
                 }
             };
-        } else {
-            this.formattingSettings.axis.leftMin.options = undefined;
         }
         
         // Set min validator on max fields (max cannot be less than min)
@@ -689,8 +694,6 @@ export class TornadoChart implements IVisual {
                     value: leftMinVal
                 }
             };
-        } else {
-            this.formattingSettings.axis.leftMax.options = undefined;
         }
         
         // Same for right axis
@@ -701,8 +704,6 @@ export class TornadoChart implements IVisual {
                     value: rightMaxVal
                 }
             };
-        } else {
-            this.formattingSettings.axis.rightMin.options = undefined;
         }
         
         if (rightMinVal !== null && rightMinVal !== undefined && !isNaN(rightMinVal)) {
@@ -712,8 +713,6 @@ export class TornadoChart implements IVisual {
                     value: rightMinVal
                 }
             };
-        } else {
-            this.formattingSettings.axis.rightMax.options = undefined;
         }
         
         this.render(options.formatMode);
@@ -939,6 +938,59 @@ export class TornadoChart implements IVisual {
         const pyHighlighted: number = heightColumn * TornadoChart.HighlightedShapeFactor / 2;
         const maxSeries: boolean = this.dataView.series.length === TornadoChart.MaxSeries;
 
+        // Reserve space at the outer end of each side for outside-end labels so the largest
+        // bar's label doesn't get clipped by the chart edge. In "auto" mode the tallest bar
+        // gets an inside-end label, so no reservation is needed.
+        const labelsShown: boolean = this.formattingSettings?.dataLabels?.show?.value ?? true;
+        const labelPosition: string = this.formattingSettings?.dataLabels?.labelPosition?.value?.value?.toString() || "auto";
+        const mayPlaceOutside: boolean = labelsShown && labelPosition === "outsideEnd";
+
+        const computeMaxLabelWidth = (sideStart: number, sideEnd: number): number => {
+            if (!mayPlaceOutside) return 0;
+            let maxWidth = 0;
+            for (let j = sideStart; j < sideEnd; j++) {
+                const dp = dataPoints[j];
+                if (!dp) continue;
+                const formatted = labelFormatter.getLabelValueFormatter(dp.formatString).format(dp.value);
+                const td = TornadoChart.getTextData(formatted, this.formattingSettings.dataLabels.font, true, false);
+                if (td.width > maxWidth) maxWidth = td.width;
+            }
+            // Add the same outside offset that getLabelData applies (LabelPadding + max corner radius).
+            const cr = Math.max(
+                this.formattingSettings?.bars?.border?.cornerRadius?.value || 0,
+                this.formattingSettings?.negativeBars?.border?.cornerRadius?.value || 0
+            );
+            return maxWidth > 0 ? maxWidth + TornadoChart.LabelPadding + cr : 0;
+        };
+
+        const leftReserve: number = maxSeries ? computeMaxLabelWidth(0, categoriesLength) : 0;
+        const rightReserve: number = maxSeries
+            ? computeMaxLabelWidth(categoriesLength, dataPoints.length)
+            : computeMaxLabelWidth(0, dataPoints.length);
+
+        const fullColumnWidth: number = this.columnWidth;
+        const leftColumnWidth: number = Math.max(0, fullColumnWidth - leftReserve);
+        const rightColumnWidth: number = Math.max(0, fullColumnWidth - rightReserve);
+
+        // First pass: compute each bar's width so we know the longest bar per side.
+        const widths: number[] = new Array(dataPoints.length);
+        let leftMaxWidth = 0;
+        let rightMaxWidth = 0;
+        for (let i: number = 0; i < dataPoints.length; i++) {
+            const dataPoint: TornadoChartPoint = dataPoints[i];
+            const shiftToMiddle: boolean = i < categoriesLength && maxSeries;
+            const isNormalized = this.formattingSettings?.axis?.normalize?.value ?? false;
+            const minForWidth = isNormalized ? dataPoint.seriesMin : dataPoint.minValue;
+            const maxForWidth = isNormalized ? dataPoint.seriesMax : dataPoint.maxValue;
+            const sideMaxColumnWidth: number = shiftToMiddle ? leftColumnWidth : rightColumnWidth;
+            widths[i] = this.getColumnWidth(dataPoint.value, minForWidth, maxForWidth, sideMaxColumnWidth, isNormalized);
+            if (shiftToMiddle) {
+                if (widths[i] > leftMaxWidth) leftMaxWidth = widths[i];
+            } else {
+                if (widths[i] > rightMaxWidth) rightMaxWidth = widths[i];
+            }
+        }
+
         for (let i: number = 0; i < dataPoints.length; i++) {
             const dataPoint: TornadoChartPoint = dataPoints[i];
 
@@ -948,11 +1000,12 @@ export class TornadoChart implements IVisual {
             // When normalized, use series-specific min/max so each series scales to its own 100%
             const minForWidth = isNormalized ? dataPoint.seriesMin : dataPoint.minValue;
             const maxForWidth = isNormalized ? dataPoint.seriesMax : dataPoint.maxValue;
-            const widthOfColumn: number = this.getColumnWidth(dataPoint.value, minForWidth, maxForWidth, this.columnWidth, isNormalized);
+            const widthOfColumn: number = widths[i];
+            const sideLongestBarWidth: number = shiftToMiddle ? leftMaxWidth : rightMaxWidth;
             const centerOffset = this.centerLineOffset;
             // For left bars (shiftToMiddle): position them to end before the center line
             // For right bars (shiftToRight): position them to start after the center line
-            let dx: number = (this.columnWidth - widthOfColumn) * Number(shiftToMiddle) + (this.columnWidth + centerOffset * 2) * Number(shiftToRight)/* - scrollBarWidth*/;
+            let dx: number = (fullColumnWidth - widthOfColumn) * Number(shiftToMiddle) + (fullColumnWidth + centerOffset * 2) * Number(shiftToRight)/* - scrollBarWidth*/;
             dx = Math.max(dx, 0);
 
             const highlighted: boolean = this.dataView.hasHighlights && dataPoint.highlight;
@@ -971,7 +1024,8 @@ export class TornadoChart implements IVisual {
                 shiftToMiddle,
                 dataPoint.formatString,
                 labelFormatter,
-                percentage);
+                percentage,
+                sideLongestBarWidth);
 
             dataPoint.dx = dx;
             dataPoint.dy = dy;
@@ -1155,11 +1209,12 @@ export class TornadoChart implements IVisual {
         isColumnPositionLeft: boolean,
         formatStringProp: string,
         labelFormatter: TornadoChartLabelFormatter,
-        percentage: number): LabelData {
+        percentage: number,
+        sideLongestBarWidth: number = 0): LabelData {
 
         const fontSize: number = this.formattingSettings.dataLabels.font.fontSize.value;
         const displayFormat: string = this.formattingSettings.dataLabels.displayFormat?.value?.value?.toString() || "value";
-        const precision: number = this.formattingSettings.dataLabels.labelPrecision.value;
+        const percentagePrecision: number = this.formattingSettings.dataLabels.percentagePrecision?.value ?? 0;
 
         let dx: number,
             color: string = this.formattingSettings.dataLabels.insideFill.value.value || this.themeBackgroundColor;
@@ -1171,7 +1226,7 @@ export class TornadoChart implements IVisual {
 
         // Format the value based on display format setting
         const formattedValue = labelFormatter.getLabelValueFormatter(formatStringProp).format(value);
-        const formattedPercentage = percentage.toFixed(precision) + "%";
+        const formattedPercentage = percentage.toFixed(percentagePrecision) + "%";
         
         let labelText: string;
         switch (displayFormat) {
@@ -1195,24 +1250,85 @@ export class TornadoChart implements IVisual {
         const valueAfterValueFormatter: string = textMeasurementService.getTailoredTextOrDefault(textProperties, maxLabelWidth);
         const textDataAfterValueFormatter: TextData = TornadoChart.getTextData(valueAfterValueFormatter, this.formattingSettings.dataLabels.font, true, false);
 
-        if (columnWidth > textDataAfterValueFormatter.width + TornadoChart.LabelPadding) {
-            dx = dxColumn + columnWidth / 2 - textDataAfterValueFormatter.width / 2;
-            // Use negative fill color for negative values when label is inside
-            if (value < 0) {
-                color = this.formattingSettings.dataLabels.negativeFill.value.value || "#D64550";
+        const labelPosition: string = this.formattingSettings.dataLabels.labelPosition?.value?.value?.toString() || "auto";
+        const textWidth: number = textDataAfterValueFormatter.width;
+
+        const negativeColor: string = this.formattingSettings.dataLabels.negativeFill.value.value || "#D64550";
+        const insideColor: string = this.formattingSettings.dataLabels.insideFill.value.value || this.themeBackgroundColor;
+        const outsideColor: string = this.formattingSettings.dataLabels.outsideFill.value.value || this.themeForegroundColor;
+
+        // Pad inside-end/inside-base/outside-end labels by the bar's *rendered* corner radius
+        // so they visually clear the rounded corner instead of sitting flush against it.
+        // Mirror the same clamping the column path applies (see getColumnPath / d attr above).
+        const negativeBarsShown: boolean = this.formattingSettings.negativeBars.show.value;
+        const isNegative: boolean = value < 0 && negativeBarsShown;
+        const configuredCornerRadius: number = isNegative
+            ? this.formattingSettings.negativeBars.border.cornerRadius.value
+            : this.formattingSettings.bars.border.cornerRadius.value;
+        const configuredBorderWidth: number = isNegative
+            ? this.formattingSettings.negativeBars.border.borderWidth.value
+            : this.formattingSettings.bars.border.borderWidth.value;
+        const barInset: number = (configuredBorderWidth || 0) / 2;
+        const innerWidth: number = Math.max(0, columnWidth - (configuredBorderWidth || 0));
+        const innerHeight: number = Math.max(0, this.heightColumn - (configuredBorderWidth || 0));
+        const barCornerRadius: number = Math.max(
+            0,
+            Math.min(configuredCornerRadius - barInset, innerWidth / 2, innerHeight / 2)
+        );
+        const insidePadding: number = TornadoChart.LabelPadding + barCornerRadius;
+
+        // Determine effective position. "auto" = outside end if the label fits in the space
+        // between the bar tip and the outer edge of the chart; otherwise inside end.
+        const outsideSpace: number = isColumnPositionLeft
+            ? dxColumn
+            : Math.max(0, this.allColumnsWidth - (dxColumn + columnWidth));
+        const fitsOutside: boolean = outsideSpace >= textWidth + insidePadding;
+        const fitsInside: boolean = columnWidth >= textWidth + insidePadding * 2;
+        let effectivePosition: string = labelPosition;
+        if (effectivePosition === "auto") {
+            if (fitsOutside) {
+                effectivePosition = "outsideEnd";
+            } else if (fitsInside) {
+                effectivePosition = "insideEnd";
+            } else {
+                effectivePosition = "outsideEnd";
             }
+        }
+        const isInside: boolean = effectivePosition !== "outsideEnd";
+
+        // For tornado, "outer end" of a left-side bar is at dxColumn (its left edge);
+        // "outer end" of a right-side bar is at dxColumn + columnWidth (its right edge).
+        switch (effectivePosition) {
+            case "insideEnd":
+                dx = isColumnPositionLeft
+                    ? dxColumn + insidePadding
+                    : dxColumn + columnWidth - textWidth - insidePadding;
+                break;
+            case "insideBase":
+                dx = isColumnPositionLeft
+                    ? dxColumn + columnWidth - textWidth - insidePadding
+                    : dxColumn + insidePadding;
+                break;
+            case "outsideEnd": {
+                // Sit right next to the bar tip: just clear the rounded corner plus a tiny gap.
+                const outsideOffset: number = TornadoChart.LabelPadding + barCornerRadius;
+                dx = isColumnPositionLeft
+                    ? dxColumn - outsideOffset - textWidth
+                    : dxColumn + columnWidth + outsideOffset;
+                break;
+            }
+            case "insideCenter":
+            default:
+                dx = dxColumn + columnWidth / 2 - textWidth / 2;
+                break;
+        }
+
+        if (value < 0) {
+            color = negativeColor;
+        } else if (isInside) {
+            color = insideColor;
         } else {
-            if (isColumnPositionLeft) {
-                dx = dxColumn - this.leftLabelMargin - textDataAfterValueFormatter.width;
-            } else {
-                dx = dxColumn + columnWidth + this.leftLabelMargin;
-            }
-            // Use negative fill color for negative values, otherwise use outside fill
-            if (value < 0) {
-                color = this.formattingSettings.dataLabels.negativeFill.value.value || "#D64550";
-            } else {
-                color = this.formattingSettings.dataLabels.outsideFill.value.value || this.themeForegroundColor;
-            }
+            color = outsideColor;
         }
 
         return {
@@ -1302,7 +1418,6 @@ export class TornadoChart implements IVisual {
 
         const fontSizeInPx: string = PixelConverter.fromPoint(labelsSettings.font.fontSize.value);
         const labelYOffset: number = this.heightColumn / 2 + this.dataView.labelHeight / 2 - this.InnerTextHeightDelta;
-        const categoriesLength: number = this.dataView.categories.length;
 
         const labelFontFamily : string = formattingSettings.dataLabels.font.fontFamily.value;
 
@@ -1332,9 +1447,10 @@ export class TornadoChart implements IVisual {
             .text((p: TornadoChartPoint) => p.label.source);
 
         labelSelectionMerged
-            .attr("transform", (p: TornadoChartPoint, index: number) => {
-                const dy: number = (this.heightColumn + this.columnPadding) * (index % categoriesLength);
-                return translate(p.label.dx, dy + labelYOffset);
+            .attr("transform", (p: TornadoChartPoint) => {
+                // Use the data point's own dy (set in calculateDataPoints) so labels stay aligned
+                // with their bars even when some labels are filtered out of the selection.
+                return translate(p.label.dx, p.dy + labelYOffset);
             });
 
         labelSelectionMerged
