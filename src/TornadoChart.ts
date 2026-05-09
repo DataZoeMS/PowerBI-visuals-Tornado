@@ -974,10 +974,8 @@ export class TornadoChart implements IVisual {
         const leftColumnWidth: number = Math.max(0, fullColumnWidth - leftReserve);
         const rightColumnWidth: number = Math.max(0, fullColumnWidth - rightReserve);
 
-        // First pass: compute each bar's width so we know the longest bar per side.
+        // First pass: compute each bar's width.
         const widths: number[] = new Array(dataPoints.length);
-        let leftMaxWidth = 0;
-        let rightMaxWidth = 0;
         for (let i: number = 0; i < dataPoints.length; i++) {
             const dataPoint: TornadoChartPoint = dataPoints[i];
             const shiftToMiddle: boolean = i < categoriesLength && maxSeries;
@@ -986,11 +984,6 @@ export class TornadoChart implements IVisual {
             const maxForWidth = isNormalized ? dataPoint.seriesMax : dataPoint.maxValue;
             const sideMaxColumnWidth: number = shiftToMiddle ? leftColumnWidth : rightColumnWidth;
             widths[i] = this.getColumnWidth(dataPoint.value, minForWidth, maxForWidth, sideMaxColumnWidth, isNormalized);
-            if (shiftToMiddle) {
-                if (widths[i] > leftMaxWidth) leftMaxWidth = widths[i];
-            } else {
-                if (widths[i] > rightMaxWidth) rightMaxWidth = widths[i];
-            }
         }
 
         for (let i: number = 0; i < dataPoints.length; i++) {
@@ -999,13 +992,11 @@ export class TornadoChart implements IVisual {
             const shiftToMiddle: boolean = i < categoriesLength && maxSeries;
             const shiftToRight: boolean = i > categoriesLength - 1;
             const isNormalized = this.formattingSettings?.axis?.normalize?.value ?? false;
-            // When normalized, use series-specific min/max so each series scales to its own 100%.
+            // When normalized, use series-specific max so each series scales to its own 100%.
             // NOTE: bar widths (and derived percentages) are only comparable within the same series;
             // bars from different series may appear similar in width even when their absolute values differ greatly.
-            const minForWidth = isNormalized ? dataPoint.seriesMin : dataPoint.minValue;
             const maxForWidth = isNormalized ? dataPoint.seriesMax : dataPoint.maxValue;
             const widthOfColumn: number = widths[i];
-            const sideLongestBarWidth: number = shiftToMiddle ? leftMaxWidth : rightMaxWidth;
             const centerOffset = this.centerLineOffset;
             // For left bars (shiftToMiddle): position them to end before the center line
             // For right bars (shiftToRight): position them to start after the center line
@@ -1028,8 +1019,7 @@ export class TornadoChart implements IVisual {
                 shiftToMiddle,
                 dataPoint.formatString,
                 labelFormatter,
-                percentage,
-                sideLongestBarWidth);
+                percentage);
 
             dataPoint.dx = dx;
             dataPoint.dy = dy;
@@ -1220,8 +1210,7 @@ export class TornadoChart implements IVisual {
         isColumnPositionLeft: boolean,
         formatStringProp: string,
         labelFormatter: TornadoChartLabelFormatter,
-        percentage: number,
-        sideLongestBarWidth: number = 0): LabelData {
+        percentage: number): LabelData {
 
         const fontSize: number = this.formattingSettings.dataLabels.font.fontSize.value;
         const displayFormat: string = this.formattingSettings.dataLabels.displayFormat?.value?.value?.toString() || "value";
