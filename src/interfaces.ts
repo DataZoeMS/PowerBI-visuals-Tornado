@@ -58,10 +58,6 @@ export interface TornadoChartSeries {
     name: string;
     selectionId: ISelectionId;
     categoryAxisEnd: number;
-    leftAxisMin: number | null;
-    leftAxisMax: number | null;
-    rightAxisMin: number | null;
-    rightAxisMax: number | null;
 }
 
 export interface TornadoChartLabelFormatter {

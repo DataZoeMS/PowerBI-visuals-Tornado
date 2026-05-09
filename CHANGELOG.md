@@ -2,9 +2,9 @@
 
 ### New Features
 * Added theme color support for bar fill colors (uses Power BI theme palette)
-* Added bar formatting options: border, corner radius, and inner padding
-* Added center line customization (visibility, color, width, style)
-* Added plot area background fill with transparency control
+* Added bar formatting options: border, corner radius, and bar spacing
+* Added center line customization (visibility, color, width)
+* Added plot area background color
 * Added negative bar color customization (independent from positive bars)
 * Added axis normalization option to scale both sides to 100%
 * Added auto-range toggles for left/right axis scales (allows independent min/max per side)
