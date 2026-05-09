@@ -1288,8 +1288,8 @@ export class TornadoChart implements IVisual {
         );
         const insidePadding: number = TornadoChart.LabelPadding + barCornerRadius;
 
-        // Determine effective position. "auto" = inside end if the label fits inside the bar;
-        // otherwise outside end (and if that would be clipped, fall back to inside).
+        // Determine effective position. "auto" = outside end if the label fits in the space
+        // between the bar tip and the outer edge of the chart; otherwise inside end.
         const outsideSpace: number = isColumnPositionLeft
             ? dxColumn
             : Math.max(0, this.allColumnsWidth - (dxColumn + columnWidth));
@@ -1297,12 +1297,12 @@ export class TornadoChart implements IVisual {
         const fitsInside: boolean = columnWidth >= textWidth + insidePadding * 2;
         let effectivePosition: string = labelPosition;
         if (effectivePosition === "auto") {
-            if (fitsInside) {
-                effectivePosition = "insideEnd";
-            } else if (fitsOutside) {
+            if (fitsOutside) {
                 effectivePosition = "outsideEnd";
-            } else {
+            } else if (fitsInside) {
                 effectivePosition = "insideEnd";
+            } else {
+                effectivePosition = "outsideEnd";
             }
         }
         const isInside: boolean = effectivePosition !== "outsideEnd";
