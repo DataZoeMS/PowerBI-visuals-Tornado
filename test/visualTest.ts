@@ -284,7 +284,7 @@ describe("TornadoChart", () => {
                 visualBuilder.updateFlushAllD3Transitions(dataView);
                 visualBuilder.updateRenderTimeout(dataView, async () => {
                     await delay(defaultAwaitTime);
-                    let columns: HTMLElement[] = Array.from(visualBuilder.columns[0].querySelectorAll("rect.column"));
+                    let columns: HTMLElement[] = Array.from(visualBuilder.columns);
 
                     colors.forEach((color: string, index: number) => {
                         const doColumnContainColor: boolean = columns.some((element: HTMLElement) => {
@@ -487,7 +487,7 @@ describe("TornadoChart", () => {
             visualBuilder.visualHost.colorPalette.foreground = { value: foregroundColor };
 
             visualBuilder.updateRenderTimeout(dataView, () => {
-                columns = Array.from(visualBuilder.columns[0].querySelectorAll("rect.column"));
+                columns = Array.from(visualBuilder.columns);
             });
         });
 
